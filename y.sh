@@ -1,213 +1,94 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/bin/bash
 
-# สร้างฟังก์ชัน ASCII Art Logo
-show_logo() {
-    echo -e "\033[32m"
-    cat << "EOF"
-╭━━━╮╱╱╱╱╱╭━━━╮
-┃╭━╮┃╱╱╱╱╱┃╭━╮┃
-┃╰━━┳━━┳━━┫┃╱┃┣━━┳━╮
-╰━━╮┃╭╮┃╭╮┃┃╱┃┃╭╮┃╭╯
-┃╰━╯┃╰╯┃╰╯┃╰━╯┃╰╯┃┃
-╰━━━┫╭━┫╭━┻━━━┻━━┻╯
-╱╱╱╱┃┃╱┃┃
-╱╱╱╱╰╯╱╰╯ YouTube Downloader
-EOF
-    echo -e "\033[0m"
-}
+# เริ่มต้นด้วยการตรวจสอบ Termux และติดตั้งเครื่องมือที่จำเป็น
+echo "กำลังตรวจสอบระบบ Termux และติดตั้ง dependencies..."
+pkg update -y && pkg install python openssh git -y
 
-# สร้างฟังก์ชัน Progress Bar
-show_progress() {
-    local width=50
-    local percentage=$1
-    local filled=$(printf "%.0f" $(echo "$percentage * $width / 100" | bc -l))
-    local empty=$((width - filled))
-    printf "\r["
-    printf "%${filled}s" | tr ' ' '█'
-    printf "%${empty}s" | tr ' ' '░'
-    printf "] %3d%%" $percentage
-}
+# ตั้งค่าเซิร์ฟเวอร์ Python SimpleHTTPServer บนพอร์ต 8080
+echo "ตั้งค่าเซิร์ฟเวอร์บน localhost:8080..."
+cd /data/data/com.termux/files/home || exit
+if [ ! -d "webapp" ]; then mkdir webapp; fi
+cd webapp || exit
 
-# ตรวจสอบและติดตั้งแพ็คเกจ
-check_and_install() {
-    local package=$1
-    echo -e "\033[34m📦 กำลังตรวจสอบ $package...\033[0m"
-    if ! command -v $package >/dev/null 2>&1; then
-        echo -e "\033[33m⚡ กำลังติดตั้ง $package...\033[0m"
-        pkg install $package -y
-    fi
-    echo -e "\033[32m✓ ติดตั้ง $package เรียบร้อย\033[0m"
-}
-
-# แสดง Logo
-clear
-show_logo
-
-# ติดตั้งแพ็คเกจที่จำเป็น
-echo -e "\n\033[36m🔄 กำลังอัพเดทระบบ...\033[0m"
-pkg update -y && pkg upgrade -y
-
-for pkg in python ffmpeg nginx openssh; do
-    check_and_install $pkg
-done
-
-pip install yt-dlp flask
-
-# ตั้งค่าพื้นฐาน
-PORT=8080
-DOWNLOAD_DIR="/sdcard/Download"
-mkdir -p "$DOWNLOAD_DIR"
-termux-setup-storage
-
-# สร้างไฟล์ HTML ที่สวยงาม
-cat << 'EOF' > /data/data/com.termux/files/usr/share/nginx/html/index.html
+# สร้างไฟล์ index.html ที่มี HTML, CSS, JS รวมอยู่ใน Bash
+cat << 'EOF' > index.html
 <!DOCTYPE html>
-<html>
+<html lang="th">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🎥 Super YouTube Downloader</title>
+    <title>PM 2.5 Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        body {
-            font-family: 'Segoe UI', sans-serif;
-            background: #1a1a1a;
-            color: #fff;
-            margin: 0;
-            padding: 20px;
-        }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            background: #2d2d2d;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 0 20px rgba(0,0,0,0.5);
-        }
-        .input-group {
-            margin: 20px 0;
-            animation: fadeIn 0.5s;
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        input[type="text"] {
-            width: 100%;
-            padding: 12px;
-            border: none;
-            background: #3d3d3d;
-            color: #fff;
-            border-radius: 5px;
-            margin-bottom: 10px;
-        }
-        button {
-            background: #4CAF50;
-            color: white;
-            padding: 12px 25px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        button:hover {
-            background: #45a049;
-            transform: translateY(-2px);
-        }
-        .status {
-            margin-top: 20px;
-            padding: 10px;
-            border-radius: 5px;
-            background: #3d3d3d;
-        }
+        body { margin: 0; font-family: Arial, sans-serif; }
+        #map { height: 100vh; width: 100%; }
+        .dust { position: absolute; background: rgba(255, 165, 0, 0.5); border-radius: 50%; }
+        .info { position: fixed; top: 10px; left: 10px; background: white; padding: 10px; z-index: 1000; }
+        @media (max-width: 600px) { .info { font-size: 12px; padding: 5px; } }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🎥 Super YouTube Downloader</h1>
-        <div class="input-group">
-            <input type="text" id="url" placeholder="ใส่ลิงก์ YouTube ที่นี่...">
-            <button onclick="download()">⬇️ ดาวน์โหลด</button>
-        </div>
-        <div class="status" id="status"></div>
-    </div>
+    <div id="map"></div>
+    <div class="info" id="pm25-info">กำลังโหลดข้อมูล PM 2.5...</div>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        async function download() {
-            const url = document.getElementById('url').value;
-            const status = document.getElementById('status');
-            status.innerHTML = '⚡ กำลังดาวน์โหลด...';
-            try {
-                const response = await fetch('/download', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({url})
-                });
-                const data = await response.json();
-                status.innerHTML = `✅ ดาวน์โหลดเสร็จสิ้น: ${data.filename}`;
-            } catch (error) {
-                status.innerHTML = '❌ เกิดข้อผิดพลาด: ' + error;
-            }
-        }
+        // ตั้งค่าแผนที่ Leaflet
+        var map = L.map('map').setView([13.7563, 100.5018], 10); // เริ่มที่กรุงเทพฯ
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // ดึงข้อมูล PM 2.5 จาก API
+        fetch('https://api.waqi.info/feed/here/?token=30ad392578ae9d83ce9f1bfee4fe6adcee82431c')
+            .then(response => response.json())
+            .then(data => {
+                let pm25 = data.data.iaqi.pm25?.v || 'N/A';
+                let lat = data.data.lat || 13.7563;
+                let lon = data.data.lon || 100.5018;
+                document.getElementById('pm25-info').innerHTML = `PM 2.5: ${pm25} µg/m³<br>ตำแหน่ง: ${lat}, ${lon}`;
+
+                // เพิ่ม marker บนแผนที่
+                L.marker([lat, lon]).addTo(map).bindPopup(`PM 2.5: ${pm25} µg/m³`).openPopup();
+
+                // สร้างเอฟเฟกต์ฝุ่น
+                let dustSize = pm25 * 2; // ขนาดวงกลมตามค่า PM 2.5
+                let dust = L.circle([lat, lon], {
+                    color: 'orange',
+                    fillColor: '#ff7800',
+                    fillOpacity: 0.3,
+                    radius: dustSize
+                }).addTo(map);
+            })
+            .catch(error => {
+                document.getElementById('pm25-info').innerHTML = 'เกิดข้อผิดพลาด: ' + error;
+            });
     </script>
 </body>
 </html>
 EOF
 
-# สร้าง Flask app
-cat << 'EOF' > /data/data/com.termux/files/home/app.py
-from flask import Flask, request, jsonify
-import subprocess
-import os
+# รันเซิร์ฟเวอร์ Python บนพอร์ต 8080
+echo "เริ่มรันเซิร์ฟเวอร์ Python บนพอร์ต 8080..."
+python -m http.server 8080 &
+SERVER_PID=$!
 
-app = Flask(__name__)
+# รอ 2 วินาทีเพื่อให้เซิร์ฟเวอร์เริ่มทำงาน
+sleep 2
 
-@app.route('/')
-def home():
-    return open('/data/data/com.termux/files/usr/share/nginx/html/index.html').read()
-
-@app.route('/download', methods=['POST'])
-def download():
-    try:
-        url = request.json['url']
-        output = subprocess.check_output([
-            'yt-dlp',
-            '-f', 'best',
-            '-o', '/sdcard/Download/%(title)s.%(ext)s',
-            '--no-warnings',
-            url
-        ], stderr=subprocess.STDOUT)
-        return jsonify({'status': 'success', 'filename': output.decode().split('\n')[-2]})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
-EOF
-
-# ตั้งค่า Nginx
-echo "server {
-    listen 8080;
-    server_name localhost;
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-    }
-}" > /data/data/com.termux/files/usr/etc/nginx/sites-enabled/default
-
-# รีสตาร์ท Nginx
-nginx -s reload
-
-# เริ่ม SSH tunnel
-echo -e "\033[36m🌐 กำลังเริ่ม SSH tunnel...\033[0m"
+# Forward พอร์ต 8080 ไปยังพอร์ต 80 ด้วย SSH
+echo "Forward พอร์ต 8080 ไปยังพอร์ต 80 ด้วย SSH..."
 ssh -R 80:localhost:8080 nokey@localhost.run &
-
-# เริ่ม Flask server
-echo -e "\033[32m🚀 เริ่มต้นเซิร์ฟเวอร์...\033[0m"
-python /data/data/com.termux/files/home/app.py &
+SSH_PID=$!
 
 # แสดงสถานะ
-echo -e "\n\033[32m✨ พร้อมใช้งานแล้ว!\033[0m"
-echo -e "\033[36m📱 Local URL: http://localhost:$PORT\033[0m"
-echo -e "\033[36m🌍 หรือใช้ URL สาธารณะจาก SSH tunnel\033[0m"
+echo "เซิร์ฟเวอร์รันอยู่ที่ localhost:8080 และ forward ไปยังพอร์ต 80"
+echo "PID เซิร์ฟเวอร์: $SERVER_PID | PID SSH: $SSH_PID"
 
-wait
+# ฟังก์ชันสำหรับหยุดเซิร์ฟเวอร์เมื่อกด Ctrl+C
+trap 'echo "หยุดเซิร์ฟเวอร์..."; kill $SERVER_PID $SSH_PID; exit' INT
+
+# รอให้ผู้ใช้กด Ctrl+C เพื่อหยุด
+echo "กด Ctrl+C เพื่อหยุดเซิร์ฟเวอร์"
+while true; do
+    sleep 1
+done
