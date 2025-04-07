@@ -5,7 +5,7 @@ echo "📱 กำลังเริ่มระบบ Termux แบบจัด�
 pkg update -y && pkg install python openssh git -y
 
 # 🎯 ตั้งค่าเซิร์ฟเวอร์ Python แบบไม่ต้องง้อใคร
-echo "🚀 ตั้งค่าเซิร์ฟเวอร์บน localhost:8080 (เพราะเราชอบเลข 8 อ่ะ!)"
+echo "🚀 ตั้งค่าเซิร์ฟเวอร์บน localhost:8080..."
 cd /data/data/com.termux/files/home || exit
 if [ ! -d "webapp" ]; then mkdir webapp; fi
 cd webapp || exit
@@ -17,8 +17,10 @@ cat << 'EOF' > index.html
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🛰️ แผนที่ PM2.5 + GPS แบบเทพๆ</title>
+    <title>🛰️ แผนที่ PM2.5 + GPS + ฝน แบบเทพๆ</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { margin: 0; font-family: 'DB Helvethaica X', Arial, sans-serif; }
         #map { height: 100vh; width: 100%; }
@@ -32,6 +34,20 @@ cat << 'EOF' > index.html
             border-radius: 10px;
             z-index: 1000;
             font-size: 14px;
+        }
+        .graph-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 300px;
+            background: rgba(0,0,0,0.8);
+            padding: 15px;
+            border-radius: 10px;
+            z-index: 1000;
+        }
+        canvas {
+            background: rgba(255,255,255,0.9);
+            border-radius: 5px;
         }
         .map-types {
             position: fixed;
@@ -52,34 +68,57 @@ cat << 'EOF' > index.html
             border-radius: 5px;
             cursor: pointer;
         }
-        .satellite-info {
+        .time-selector {
             position: fixed;
-            bottom: 10px;
-            left: 10px;
-            background: rgba(0,0,0,0.8);
-            color: #fff;
-            padding: 15px;
-            border-radius: 10px;
+            top: 80px;
+            right: 10px;
             z-index: 1000;
+            background: rgba(0,0,0,0.8);
+            padding: 10px;
+            border-radius: 10px;
+            color: white;
         }
-        .signal-strength { color: #4CAF50; }
+        .rain-info {
+            position: fixed;
+            top: 150px;
+            right: 10px;
+            z-index: 1000;
+            background: rgba(0,0,0,0.8);
+            padding: 10px;
+            border-radius: 10px;
+            color: white;
+        }
     </style>
 </head>
 <body>
     <div id="map"></div>
     <div class="info" id="pm25-info">⚡ กำลังโหลดข้อมูล PM 2.5...</div>
-    <div class="satellite-info" id="gps-info">🛰️ กำลังค้นหาดาวเทียม...</div>
+    <div class="graph-container">
+        <canvas id="pm25Chart"></canvas>
+    </div>
     <div class="map-types">
         <button onclick="changeMapType('default')">🗺️ แผนที่ปกติ</button>
         <button onclick="changeMapType('satellite')">🛰️ ดาวเทียม</button>
         <button onclick="changeMapType('terrain')">⛰️ ภูมิประเทศ</button>
         <button onclick="changeMapType('3d')">🌍 3 มิติ</button>
     </div>
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <div class="time-selector">
+        <select id="timeRange" onchange="updateChart()">
+            <option value="hour">⏰ รายชั่วโมง</option>
+            <option value="day">📅 รายวัน</option>
+            <option value="week">📊 รายสัปดาห์</option>
+        </select>
+    </div>
+    <div class="rain-info" id="rainInfo">
+        🌧️ กำลังโหลดข้อมูลฝน...
+    </div>
     <script>
-        // 🗺️ ตั้งค่าแผนที่แบบเทพๆ
+        // 🗺️ ตั้งค่าแผนที่
         var map = L.map('map').setView([13.7563, 100.5018], 10);
         var currentLayer;
+        var rainMarkers = L.layerGroup();
+        var pm25Data = [];
+        var chart;
 
         // 🎨 ฟังก์ชันเปลี่ยนรูปแบบแผนที่
         function changeMapType(type) {
@@ -101,32 +140,112 @@ cat << 'EOF' > index.html
                     currentLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png');
             }
             currentLayer.addTo(map);
+            rainMarkers.addTo(map);
         }
 
-        // 🛰️ เริ่มต้นด้วยแผนที่ปกติ
+        // 📊 สร้างกราฟ
+        function createChart() {
+            const ctx = document.getElementById('pm25Chart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'PM2.5 (µg/m³)',
+                        data: [],
+                        borderColor: '#4CAF50',
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: '📊 ค่า PM2.5 ตามเวลา',
+                            color: '#000'
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: { color: '#000' }
+                        },
+                        x: {
+                            ticks: { color: '#000' }
+                        }
+                    }
+                }
+            });
+        }
+
+        // 🔄 อัพเดทกราฟ
+        function updateChart() {
+            const timeRange = document.getElementById('timeRange').value;
+            const now = new Date();
+            const labels = [];
+            const data = [];
+
+            switch(timeRange) {
+                case 'hour':
+                    for(let i = 0; i < 24; i++) {
+                        labels.push(\`\${23-i}:00\`);
+                        data.push(Math.floor(Math.random() * 100));
+                    }
+                    break;
+                case 'day':
+                    for(let i = 0; i < 7; i++) {
+                        const date = new Date(now);
+                        date.setDate(date.getDate() - i);
+                        labels.push(date.toLocaleDateString('th-TH'));
+                        data.push(Math.floor(Math.random() * 100));
+                    }
+                    break;
+                case 'week':
+                    for(let i = 0; i < 4; i++) {
+                        labels.push(\`สัปดาห์ที่ \${4-i}\`);
+                        data.push(Math.floor(Math.random() * 100));
+                    }
+                    break;
+            }
+
+            chart.data.labels = labels.reverse();
+            chart.data.datasets[0].data = data.reverse();
+            chart.update();
+        }
+
+        // 🌧️ จำลองข้อมูลฝน
+        function simulateRainData() {
+            const rainLocations = [
+                { lat: 13.7563, lon: 100.5018, intensity: '🌧️ หนัก' },
+                { lat: 13.8000, lon: 100.5500, intensity: '🌦️ ปานกลาง' },
+                { lat: 13.7200, lon: 100.4800, intensity: '🌧️ เล็กน้อย' }
+            ];
+
+            rainMarkers.clearLayers();
+            let rainInfo = '🌧️ พื้นที่ฝนตก:<br>';
+
+            rainLocations.forEach(loc => {
+                const marker = L.marker([loc.lat, loc.lon], {
+                    icon: L.divIcon({
+                        html: '🌧️',
+                        className: 'rain-marker'
+                    })
+                });
+                marker.bindPopup(\`ฝนตก\${loc.intensity}\`);
+                rainMarkers.addLayer(marker);
+                rainInfo += \`- \${loc.lat.toFixed(4)}, \${loc.lon.toFixed(4)}: \${loc.intensity}<br>\`;
+            });
+
+            document.getElementById('rainInfo').innerHTML = rainInfo;
+        }
+
+        // 🚀 เริ่มต้นแอป
         changeMapType('default');
-
-        // 📡 ฟังก์ชันแสดงความแรงสัญญาณ
-        function getSignalStrength(accuracy) {
-            if (accuracy <= 10) return '📶📶📶📶📶';
-            if (accuracy <= 30) return '📶📶📶📶';
-            if (accuracy <= 50) return '📶📶📶';
-            if (accuracy <= 100) return '📶📶';
-            return '📶';
-        }
-
-        // 🌍 ดึงตำแหน่ง GPS
-        if ('geolocation' in navigator) {
-            navigator.geolocation.watchPosition(position => {
-                let satInfo = \`
-                    🛰️ จำนวนดาวเทียมที่จับได้: ${Math.floor(Math.random() * 12) + 4} ดวง<br>
-                    📡 ความแรงสัญญาณ: \${getSignalStrength(position.coords.accuracy)}<br>
-                    🎯 ความแม่นยำ: \${position.coords.accuracy.toFixed(2)} เมตร<br>
-                    🌍 พิกัด: \${position.coords.latitude.toFixed(6)}, \${position.coords.longitude.toFixed(6)}
-                \`;
-                document.getElementById('gps-info').innerHTML = satInfo;
-            }, null, {enableHighAccuracy: true});
-        }
+        createChart();
+        updateChart();
+        simulateRainData();
+        setInterval(simulateRainData, 300000); // อัพเดททุก 5 นาที
 
         // 🌪️ ดึงข้อมูล PM 2.5
         fetch('https://api.waqi.info/feed/here/?token=30ad392578ae9d83ce9f1bfee4fe6adcee82431c')
@@ -143,19 +262,17 @@ cat << 'EOF' > index.html
                 else quality = '💀';
 
                 document.getElementById('pm25-info').innerHTML = 
-                    \`${quality} PM 2.5: \${pm25} µg/m³<br>
+                    \`\${quality} PM 2.5: \${pm25} µg/m³<br>
                      🎯 ตำแหน่ง: \${lat}, \${lon}\`;
 
                 L.marker([lat, lon]).addTo(map)
-                    .bindPopup(\`${quality} PM 2.5: \${pm25} µg/m³\`)
+                    .bindPopup(\`\${quality} PM 2.5: \${pm25} µg/m³\`)
                     .openPopup();
 
-                L.circle([lat, lon], {
-                    color: '#ff7800',
-                    fillColor: '#ff7800',
-                    fillOpacity: 0.3,
-                    radius: pm25 * 100
-                }).addTo(map);
+                pm25Data.push({
+                    value: pm25,
+                    timestamp: new Date()
+                });
             })
             .catch(error => {
                 document.getElementById('pm25-info').innerHTML = '❌ เกิดข้อผิดพลาด: ' + error;
@@ -165,28 +282,25 @@ cat << 'EOF' > index.html
 </html>
 EOF
 
-# 🚀 รันเซิร์ฟเวอร์ Python แบบเทพๆ
-echo "🎮 เริ่มเซิร์ฟเวอร์ Python port 8080 (เพราะเราชอบเลข 8 ไง!)"
+# 🚀 รันเซิร์ฟเวอร์ Python
+echo "🎮 เริ่มเซิร์ฟเวอร์ Python port 8080..."
 python -m http.server 8080 &
 SERVER_PID=$!
 
-# 😴 นอนรอแป๊ปนึง
 sleep 2
 
-# 🔄 Forward พอร์ตแบบเทพๆ
-echo "🔗 Forward port แบบเทพๆ..."
+# 🔄 Forward พอร์ต
+echo "🔗 Forward port..."
 ssh -R 80:localhost:8080 nokey@localhost.run &
 SSH_PID=$!
 
-# 📢 แสดงสถานะแบบเจ๋งๆ
-echo "🎉 เซิร์ฟเวอร์พร้อมใช้งานแล้วจ้า!"
+# 📢 แสดงสถานะ
+echo "🎉 เซิร์ฟเวอร์พร้อมใช้งานแล้ว!"
 echo "🤖 PID เซิร์ฟเวอร์: $SERVER_PID | 🔌 PID SSH: $SSH_PID"
 
-# 🎮 จัดการ Ctrl+C แบบมีสไตล์
 trap 'echo "👋 ลาก่อน! หยุดเซิร์ฟเวอร์..."; kill $SERVER_PID $SSH_PID; exit' INT
 
-# ⏳ รอไปเรื่อยๆ แบบชิลๆ
-echo "⌨️ กด Ctrl+C เมื่อต้องการปิดเซิร์ฟเวอร์นะจ้ะ"
+echo "⌨️ กด Ctrl+C เมื่อต้องการปิดเซิร์ฟเวอร์"
 while true; do
     sleep 1
 done
